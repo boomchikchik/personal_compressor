@@ -15,49 +15,38 @@ import traceback
 import time
 import shutil
 
-# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler('bot.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-# Bot Configuration
-API_ID = 13216322  # Get from my.telegram.org
-API_HASH = "15e5e632a8a0e52251ac8c3ccbe462c7"  # Get from my.telegram.org
-BOT_TOKEN = "7335432995:AAG3phsMDhohsuStZY7m1PyoeLhNY73KYpA"  # Get from @Bo
+
+API_ID = 13216322
+API_HASH = "15e5e632a8a0e52251ac8c3ccbe462c7"
+BOT_TOKEN = "7335432995:AAG3phsMDhohsuStZY7m1PyoeLhNY73KYpA"
 ADMIN_ID = 5993556795
 
-# Initialize bot
 app = Client("file_compression_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Queue system
 task_queue = Queue()
 processing_lock = threading.Lock()
 executor = ThreadPoolExecutor(max_workers=4)
 
-# Store user data
 user_files = {}
 active_tasks = {}
 temp_directories = []
 
-# Queue settings
 MAX_CONCURRENT_TASKS = 3
 current_tasks = 0
 
-# Supported formats
 IMAGE_FORMATS = ['jpg', 'png', 'webp', 'bmp', 'gif', 'ico', 'tiff']
 VIDEO_FORMATS = ['mp4', 'avi', 'mkv', 'mov', 'flv', 'webm', 'wmv', '3gp']
 AUDIO_FORMATS = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma']
 
 
 class ProgressTracker:
-    """Track progress for downloads, uploads, and processing"""
-    
     def __init__(self, message, total_size=0, operation="Processing"):
         self.message = message
         self.total_size = total_size
@@ -67,7 +56,6 @@ class ProgressTracker:
         self.operation = operation
         
     async def update_progress(self, current, total=None):
-        """Update progress with detailed stats"""
         self.current = current
         if total:
             self.total_size = total
@@ -98,220 +86,6 @@ class ProgressTracker:
             text = f"{self.operation}...\n\n📊 Processed: {self.format_size(current)}"
         
         try:
-            if file_type == 'image':
-                output_path = os.path.join(temp_dir, "compressed.jpg")
-                success = await FileProcessor.compress_image(file_path, output_path, 
-                                                            setting['image_quality'], progress_tracker)
-            
-            elif file_type == 'video':
-                output_path = os.path.join(temp_dir, "compressed.mp4")
-                success = await FileProcessor.compress_video(file_path, output_path, 
-                                                            setting['video_crf'], 'faster', progress_tracker)
-            
-            elif file_type == 'audio':
-                output_path = os.path.join(temp_dir, "compressed.mp3")
-                success = await FileProcessor.compress_audio(file_path, output_path, 
-                                                            setting['audio_bitrate'], progress_tracker)
-            
-            elif file_type == 'pdf':
-                output_path = os.path.join(temp_dir, "compressed.pdf")
-                await progress_tracker.update_progress(50, 100)
-                success = await asyncio.get_event_loop().run_in_executor(
-                    executor, FileProcessor.compress_pdf, file_path, output_path)
-                await progress_tracker.update_progress(100, 100)
-            
-            elif file_type == 'other':
-                output_path = os.path.join(temp_dir, "compressed.zip")
-                await progress_tracker.update_progress(50, 100)
-                success = await asyncio.get_event_loop().run_in_executor(
-                    executor, FileProcessor.compress_file_zip, file_path, output_path)
-                await progress_tracker.update_progress(100, 100)
-        
-        except Exception as e:
-            logger.error(f"Compression error: {e}")
-            await status_msg.edit_text(f"❌ Compression failed: {str(e)}")
-            await notify_admin(f"Compression failed for {user_id}", user_id, traceback.format_exc())
-            CleanupManager.cleanup_temp_dir(temp_dir)
-            return
-        
-        if success and os.path.exists(output_path):
-            output_size = os.path.getsize(output_path)
-            
-            if output_size < file_size:
-                reduction = ((file_size - output_size) / file_size) * 100
-                saved = (file_size - output_size) / (1024 * 1024)
-                
-                await status_msg.edit_text("📤 Uploading... 0%")
-                upload_tracker = ProgressTracker(status_msg, output_size, "📤 Uploading")
-                
-                caption = f"""✅ **Compression Complete!**
-
-📊 **Level**: {level.upper()}
-📦 **Original**: {file_size / (1024*1024):.2f} MB
-🗜️ **Compressed**: {output_size / (1024*1024):.2f} MB
-📉 **Reduction**: {reduction:.1f}%
-💾 **Saved**: {saved:.2f} MB"""
-                
-                try:
-                    await original_message.reply_document(output_path, caption=caption,
-                                                         progress=upload_tracker.update_progress)
-                    await status_msg.delete()
-                except Exception as e:
-                    logger.error(f"Upload error: {e}")
-                    await status_msg.edit_text(f"❌ Upload failed: {str(e)}")
-                    await notify_admin(f"Upload failed for {user_id}", user_id, traceback.format_exc())
-            else:
-                await status_msg.edit_text(
-                    f"⚠️ **Compression Not Effective**\n\n"
-                    f"📦 Original: {file_size / (1024*1024):.2f} MB\n"
-                    f"🗜️ Result: {output_size / (1024*1024):.2f} MB\n\n"
-                    f"File already optimized!"
-                )
-        else:
-            await status_msg.edit_text("❌ Compression failed.")
-            await notify_admin(f"Compression failed for {user_id}", user_id)
-        
-        CleanupManager.cleanup_temp_dir(temp_dir)
-        if user_id in user_files:
-            del user_files[user_id]
-    
-    except Exception as e:
-        logger.error(f"Critical error: {e}")
-        try:
-            await message.edit_text("❌ Error occurred. Admin notified.")
-        except:
-            pass
-        await notify_admin(f"Critical error for {user_id}: {str(e)}", user_id, traceback.format_exc())
-        if temp_dir:
-            CleanupManager.cleanup_temp_dir(temp_dir)
-        if user_id in user_files:
-            del user_files[user_id]
-
-
-async def process_conversion(client, message: Message, user_id, file_type, output_format):
-    temp_dir = None
-    try:
-        if user_id not in user_files:
-            await message.edit_text("❌ File data not found!")
-            return
-        
-        file_info = user_files[user_id]
-        file_id = file_info['file_id']
-        original_message = file_info['message']
-        
-        temp_dir = tempfile.mkdtemp()
-        CleanupManager.register_temp_dir(temp_dir)
-        
-        status_msg = await message.edit_text("📥 Downloading... 0%")
-        progress_tracker = ProgressTracker(status_msg, operation="📥 Downloading")
-        
-        try:
-            file_path = await client.download_media(file_id, file_name=os.path.join(temp_dir, "input"),
-                                                    progress=progress_tracker.update_progress)
-        except Exception as e:
-            CleanupManager.cleanup_partial_downloads(temp_dir)
-            await status_msg.edit_text(f"❌ Download failed: {str(e)}")
-            await notify_admin(f"Download failed for {user_id}", user_id, traceback.format_exc())
-            return
-        
-        if not file_path or not os.path.exists(file_path):
-            await status_msg.edit_text("❌ Download failed!")
-            CleanupManager.cleanup_temp_dir(temp_dir)
-            return
-        
-        await status_msg.edit_text(f"🔄 Converting to {output_format.upper()}... 0%")
-        progress_tracker = ProgressTracker(status_msg, operation=f"🔄 Converting to {output_format.upper()}")
-        
-        success = False
-        output_path = os.path.join(temp_dir, f"converted.{output_format}")
-        
-        try:
-            if file_type == 'image':
-                await progress_tracker.update_progress(50, 100)
-                success = await asyncio.get_event_loop().run_in_executor(
-                    executor, FileProcessor.convert_image, file_path, output_path, output_format)
-                await progress_tracker.update_progress(100, 100)
-            
-            elif file_type == 'video':
-                await progress_tracker.update_progress(10, 100)
-                success = await asyncio.get_event_loop().run_in_executor(
-                    executor, FileProcessor.convert_video, file_path, output_path, output_format)
-                await progress_tracker.update_progress(100, 100)
-            
-            elif file_type == 'audio':
-                await progress_tracker.update_progress(50, 100)
-                success = await asyncio.get_event_loop().run_in_executor(
-                    executor, FileProcessor.convert_audio, file_path, output_path, output_format)
-                await progress_tracker.update_progress(100, 100)
-        
-        except Exception as e:
-            logger.error(f"Conversion error: {e}")
-            await status_msg.edit_text(f"❌ Conversion failed: {str(e)}")
-            await notify_admin(f"Conversion failed for {user_id}", user_id, traceback.format_exc())
-            CleanupManager.cleanup_temp_dir(temp_dir)
-            return
-        
-        if success and os.path.exists(output_path):
-            output_size = os.path.getsize(output_path)
-            
-            await status_msg.edit_text("📤 Uploading... 0%")
-            upload_tracker = ProgressTracker(status_msg, output_size, "📤 Uploading")
-            
-            caption = f"""✅ **Conversion Complete!**
-
-🔄 **Format**: {output_format.upper()}
-📦 **Size**: {output_size / (1024*1024):.2f} MB"""
-            
-            try:
-                await original_message.reply_document(output_path, caption=caption,
-                                                     progress=upload_tracker.update_progress)
-                await status_msg.delete()
-            except Exception as e:
-                logger.error(f"Upload error: {e}")
-                await status_msg.edit_text(f"❌ Upload failed: {str(e)}")
-                await notify_admin(f"Upload failed for {user_id}", user_id, traceback.format_exc())
-        else:
-            await status_msg.edit_text("❌ Conversion failed.")
-            await notify_admin(f"Conversion failed for {user_id}", user_id)
-        
-        CleanupManager.cleanup_temp_dir(temp_dir)
-        if user_id in user_files:
-            del user_files[user_id]
-    
-    except Exception as e:
-        logger.error(f"Critical error: {e}")
-        try:
-            await message.edit_text("❌ Error occurred. Admin notified.")
-        except:
-            pass
-        await notify_admin(f"Critical conversion error for {user_id}: {str(e)}", user_id, traceback.format_exc())
-        if temp_dir:
-            CleanupManager.cleanup_temp_dir(temp_dir)
-        if user_id in user_files:
-            del user_files[user_id]
-
-
-if __name__ == "__main__":
-    print("🤖 Bot starting...")
-    print(f"👤 Admin ID: {ADMIN_ID}")
-    print(f"📋 Queue system: Active")
-    print(f"🔄 Max concurrent tasks: {MAX_CONCURRENT_TASKS}")
-    print("✅ Multi-threading: Enabled")
-    print("✅ Smart compression: Enabled")
-    print("🧹 Auto cleanup: Enabled")
-    print("📊 Progress tracking: Enabled")
-    print("🚨 Error notifications: Enabled")
-    print("✅ Ready to process files!\n")
-    
-    try:
-        app.run()
-    except KeyboardInterrupt:
-        print("\n🛑 Shutting down...")
-        CleanupManager.cleanup_all()
-        print("✅ Cleanup complete!")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        CleanupManager.cleanup_all():
             await self.message.edit_text(text)
         except:
             pass
@@ -340,8 +114,6 @@ if __name__ == "__main__":
 
 
 class CleanupManager:
-    """Manage cleanup of temporary files"""
-    
     @staticmethod
     def register_temp_dir(temp_dir):
         temp_directories.append(temp_dir)
@@ -375,7 +147,6 @@ class CleanupManager:
 
 
 async def notify_admin(error_message, user_id=None, traceback_str=None):
-    """Notify admin about errors"""
     try:
         notification = f"""🚨 **Bot Error Alert**
 
@@ -393,8 +164,6 @@ async def notify_admin(error_message, user_id=None, traceback_str=None):
 
 
 class FileProcessor:
-    """Handle file processing"""
-    
     @staticmethod
     async def compress_image(input_path, output_path, quality=20, progress_callback=None):
         try:
@@ -583,8 +352,6 @@ class FileProcessor:
 
 
 class TaskQueue:
-    """Manage task queue"""
-    
     @staticmethod
     async def add_task(task_func, *args, **kwargs):
         global current_tasks
@@ -597,8 +364,7 @@ class TaskQueue:
             if message:
                 await message.edit_text(
                     f"⏳ **Task Added to Queue**\n\nPosition: #{position}\n"
-                    f"Current tasks: {current_tasks}/{MAX_CONCURRENT_TASKS}\n\n"
-                    f"Please wait..."
+                    f"Current tasks: {current_tasks}/{MAX_CONCURRENT_TASKS}\n\nPlease wait..."
                 )
         
         task_queue.put((task_func, args, kwargs, user_id))
@@ -678,9 +444,9 @@ async def start_command(client, message: Message):
     await message.reply_text("""🤖 **Welcome to Multi-Function File Bot!**
 
 I can help you with:
-📸 **Image**: Compress & Convert (JPG, PNG, WEBP, etc.)
-🎥 **Video**: Compress & Convert (MP4, AVI, MKV, etc.)
-🎵 **Audio**: Compress & Convert (MP3, WAV, OGG, etc.)
+📸 **Image**: Compress & Convert  
+🎥 **Video**: Compress & Convert
+🎵 **Audio**: Compress & Convert
 📄 **PDF**: Compress documents
 📦 **Files**: ZIP compression
 
@@ -689,7 +455,6 @@ I can help you with:
 ✅ Smart compression
 ✅ Queue system
 ✅ Automatic cleanup
-✅ Error handling
 
 Send any file to get started! 🚀""")
 
@@ -707,9 +472,7 @@ async def help_command(client, message: Message):
 **Admin Commands:**
 /setqueue <number> - Set max tasks
 /stats - View statistics
-/cleanup - Force cleanup
-
-Send /start to begin!""")
+/cleanup - Force cleanup""")
 
 
 @app.on_message(filters.command("setqueue") & filters.user(ADMIN_ID))
@@ -756,9 +519,7 @@ async def queue_status(client, message: Message):
 @app.on_message(filters.photo)
 async def handle_photo(client, message: Message):
     user_id = message.from_user.id
-    user_files[user_id] = {
-        'type': 'image', 'message': message, 'file_id': message.photo.file_id, 'format': 'jpg'
-    }
+    user_files[user_id] = {'type': 'image', 'message': message, 'file_id': message.photo.file_id, 'format': 'jpg'}
     await message.reply_text("📸 **Image received!**\n\nWhat would you like to do?",
                             reply_markup=create_action_keyboard('image'))
 
@@ -770,9 +531,7 @@ async def handle_video(client, message: Message):
         await message.reply_text("❌ Video too large! Max 50MB.")
         return
     
-    user_files[user_id] = {
-        'type': 'video', 'message': message, 'file_id': message.video.file_id, 'format': 'mp4'
-    }
+    user_files[user_id] = {'type': 'video', 'message': message, 'file_id': message.video.file_id, 'format': 'mp4'}
     await message.reply_text("🎥 **Video received!**\n\nWhat would you like to do?",
                             reply_markup=create_action_keyboard('video'))
 
@@ -780,9 +539,7 @@ async def handle_video(client, message: Message):
 @app.on_message(filters.audio)
 async def handle_audio(client, message: Message):
     user_id = message.from_user.id
-    user_files[user_id] = {
-        'type': 'audio', 'message': message, 'file_id': message.audio.file_id, 'format': 'mp3'
-    }
+    user_files[user_id] = {'type': 'audio', 'message': message, 'file_id': message.audio.file_id, 'format': 'mp3'}
     await message.reply_text("🎵 **Audio received!**\n\nWhat would you like to do?",
                             reply_markup=create_action_keyboard('audio'))
 
@@ -858,8 +615,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
     elif data.startswith("complvl_"):
         _, file_type, level = data.split("_")
         await callback_query.message.edit_text("⏳ Adding to queue...")
-        await TaskQueue.add_task(process_compression, client, callback_query.message, 
-                                user_id, file_type, level)
+        await TaskQueue.add_task(process_compression, client, callback_query.message, user_id, file_type, level)
         await callback_query.answer()
     
     elif data.startswith("convert_") and data.count("_") == 1:
@@ -871,8 +627,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
     elif data.startswith("convert_") and data.count("_") == 2:
         _, file_type, output_format = data.split("_")
         await callback_query.message.edit_text("⏳ Adding to queue...")
-        await TaskQueue.add_task(process_conversion, client, callback_query.message,
-                                user_id, file_type, output_format)
+        await TaskQueue.add_task(process_conversion, client, callback_query.message, user_id, file_type, output_format)
         await callback_query.answer()
 
 
@@ -924,8 +679,6 @@ async def process_compression(client, message: Message, user_id, file_type, leve
         output_path = None
         
         try:
-          # Add these lines after "try:" in process_compression function (line where it was cut)
-
             if file_type == 'image':
                 output_path = os.path.join(temp_dir, "compressed.jpg")
                 success = await FileProcessor.compress_image(file_path, output_path, 
